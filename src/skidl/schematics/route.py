@@ -7,6 +7,7 @@ Autorouter for generating wiring between symbols in a schematic.
 """
 
 import copy
+import heapq
 import random
 import sys
 from collections import Counter, defaultdict
@@ -2234,9 +2235,19 @@ class Router:
             if start_face in stop_faces or not stop_faces:
                 return GlobalWire(net)
 
-            # Record faces that have been visited and their distance from the start face.
-            visited_faces = [start_face]
+            # Faces that have been visited (finalized) and the heap-based frontier of
+            # faces that are reachable from the visited set with a tentative distance.
+            #
+            # NOTE: This is a Dijkstra search over the face adjacency graph.  The
+            # frontier is kept in a heapq and visited faces are tracked in a set so
+            # that each iteration costs O(log F) instead of the O(F log F) re-sort of a
+            # visited list plus O(F) membership tests.  The previous list-based
+            # implementation made routing cost O(F**2 log F) in the number of routing
+            # faces F, which made nets spanning many faces (e.g. long series chains)
+            # effectively unroutable.
+            visited_faces = {start_face}
             start_face.dist_from_start = 0
+            start_face.prev_face = None
 
             # Path searches are allowed to touch a Face on a Part if it
             # has a Pin on the net being routed or if it is one of the stop faces.
@@ -2245,43 +2256,59 @@ class Router:
             # to one of the stop faces.
             unconstrained_faces = stop_faces | net_pin_faces
 
+            # Heap entries are (distance, pred_rank, adjacency_order, face), where
+            # pred_rank = (predecessor distance, predecessor finalization order).
+            #
+            # These extra fields replicate the tie-break of the original linear-scan
+            # search exactly: it walked the visited faces sorted by distance (ties
+            # broken by finalization order) and, within a face, its adjacency set in
+            # iteration order, keeping the first candidate at the minimal distance.
+            # Because the winning route determines how much routing capacity is
+            # consumed, an unfaithful tie-break would change which nets can be routed
+            # later, so the ordering is reproduced rather than left to chance.
+            #
+            # Tentative distances are kept in a per-search dict instead of on the face
+            # objects because a Face keeps its attributes between the multiple rt_srch
+            # calls that occur while routing a single node, and stale values would
+            # wrongly block faces from being relaxed.
+            frontier = []
+            best_dist = {start_face: 0}
+            finalize_order = {start_face: 0}
+            next_order = 1
+
+            def add_to_frontier(face, dist, prev_face, pred_rank, adj_order):
+                """Push a face onto the frontier if it is still routable and closer."""
+                if face in visited_faces:
+                    # Don't re-visit faces that have already been visited.
+                    return
+
+                if face not in unconstrained_faces and face.capacity <= 0:
+                    # Skip faces with insufficient routing capacity.
+                    return
+
+                if dist >= best_dist.get(face, float("inf")):
+                    # A path at least this short to this face was already queued.
+                    return
+
+                best_dist[face] = dist
+                face.prev_face = prev_face
+                heapq.heappush(frontier, (dist, pred_rank, adj_order, face))
+
+            for adj_order, adj in enumerate(start_face.adjacent):
+                add_to_frontier(adj.face, adj.dist, start_face, (0, 0), adj_order)
+
             # Search through faces until a path is found & returned or a routing exception occurs.
             while True:
-                # Set up for finding the closest unvisited face.
+                # Pop the closest face from the frontier, skipping stale entries
+                # (faces reached earlier along a shorter path or already finalized).
                 closest_dist = float("inf")
                 closest_face = None
-
-                # Search for the closest face adjacent to the visited faces.
-                visited_faces.sort(key=lambda f: f.dist_from_start)
-                for visited_face in visited_faces:
-                    if visited_face.dist_from_start > closest_dist:
-                        # Visited face is already further than the current
-                        # closest face, so no use continuing search since
-                        # any remaining visited faces are even more distant.
+                while frontier:
+                    dist, _, _, face = heapq.heappop(frontier)
+                    if face not in visited_faces:
+                        closest_dist = dist
+                        closest_face = face
                         break
-
-                    # Get the distances to the faces adjacent to this previously-visited face
-                    # and update the closest face if appropriate.
-                    for adj in visited_face.adjacent:
-                        if adj.face in visited_faces:
-                            # Don't re-visit faces that have already been visited.
-                            continue
-
-                        if (
-                            adj.face not in unconstrained_faces
-                            and adj.face.capacity <= 0
-                        ):
-                            # Skip faces with insufficient routing capacity.
-                            continue
-
-                        # Compute distance of this adjacent face to the start face.
-                        dist = visited_face.dist_from_start + adj.dist
-
-                        if dist < closest_dist:
-                            # Record the closest face seen so far.
-                            closest_dist = dist
-                            closest_face = adj.face
-                            closest_face.prev_face = visited_face
 
                 if not closest_face:
                     # Exception raised if couldn't find a path from start to stop faces.
@@ -2289,9 +2316,22 @@ class Router:
                         f"Global routing failure: {net.name} {net} {start_face.pins}"
                     )
 
-                # Add the closest adjacent face to the list of visited faces.
+                # Add the closest adjacent face to the set of visited faces.
                 closest_face.dist_from_start = closest_dist
-                visited_faces.append(closest_face)
+                visited_faces.add(closest_face)
+                finalize_order[closest_face] = next_order
+                next_order += 1
+
+                # Relax the faces adjacent to the newly-finalized face.
+                pred_rank = (closest_dist, finalize_order[closest_face])
+                for adj_order, adj in enumerate(closest_face.adjacent):
+                    add_to_frontier(
+                        adj.face,
+                        closest_dist + adj.dist,
+                        closest_face,
+                        pred_rank,
+                        adj_order,
+                    )
 
                 if closest_face in stop_faces:
                     # The newest, closest face is actually on the list of stop faces, so the search is done.
