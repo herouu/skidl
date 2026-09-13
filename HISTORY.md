@@ -1,5 +1,10 @@
 # History
 
+## 2.3.1 (2026-09-14)
+
+- Fixed autorouting that was quadratic in the number of routing faces: a 30-part series chain burned over 14 minutes of CPU without producing a schematic. The `rt_srch` maze search now uses a heap-based frontier and a visited-set, making it O(E log V) while preserving the original tie-break.
+- Fixed `setup.py` so `README.md` and `HISTORY.md` are read as UTF-8. Source installs (`pip install .`, `pip install git+...`) previously crashed with `UnicodeDecodeError` on Windows systems using a non-UTF-8 locale such as GBK.
+
 ## 2.3.0 (2026-07-28)
 
 - Added support for KiCad 10 (`KICAD10` tool identifier) along with KiCad 10 part libraries for testing.

@@ -5,12 +5,12 @@ import sys
 
 import setuptools
 
-__version__ = "2.3.0"
+__version__ = "2.3.1"
 __author__ = "Dave Vandenbout"
 __email__ = "dave@vdb.name"
 
 if "sdist" in sys.argv[1:]:
-    with open("src/skidl/pckg_info.py", "w") as f:
+    with open("src/skidl/pckg_info.py", "w", encoding="utf-8") as f:
         for name in ["__version__", "__author__", "__email__"]:
             f.write('{} = "{}"\n'.format(name, locals()[name]))
 
@@ -20,10 +20,10 @@ except ImportError:
     from distutils.core import setup
 
 
-with open("README.md") as readme_file:
+with open("README.md", encoding="utf-8") as readme_file:
     readme = readme_file.read()
 
-with open("HISTORY.md") as history_file:
+with open("HISTORY.md", encoding="utf-8") as history_file:
     history = history_file.read()
 
 requirements = [
